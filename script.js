@@ -1,0 +1,414 @@
+// --- CONFIGURATION ---
+// This connects your GitHub front end directly to your Google Sheets backend engine
+const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyVwQL48uk27ApqlWu71qcm-12xilkSkiULCKOAAo0ZKWfAbSok9UGa9PhDByGm0I93/exec";
+
+let allData = { headers: [], rows: [] };
+let uniqueNames = [];
+let currentLang = 'EN';
+
+const textLibrary = {
+  EN: {
+    mainHeading: "Find Your Seat",
+    placeholder: "Type your name...",
+    findBtn: "Find Table",
+    linkHelp: "How To Use",
+    closeHelpBtn: "Got it!",
+    linkPlan: "Seat Plan",
+    linkMissing: "Missing?",
+    guestPlan: "Guest Plan",
+    fallbackStatus: "Please select your name first to find your table.",
+    tablePrefix: "You are seated at Table ",
+    closeBtn: "Close",
+    downloadPassBtn: "Download Pass",
+    helpTitle: "How to Use",
+    helpSteps: ["Type your name", "Select from suggestions", "Click \"Find Table\"", "Click \"Seat Plan\" for layout"],
+    helpNote: "*Names are not case-sensitive",
+    contactTitle: "Contact",
+    alertNoRecord: "No record found. Please select your name directly from the suggestions dropdown list or contact us.",
+    alertSetUrl: "Please set up a valid floor plan image URL first."
+  },
+  BM: {
+    mainHeading: "Cari Tempat Duduk Anda",
+    placeholder: "Taip nama anda...",
+    findBtn: "Cari Meja",
+    linkHelp: "Cara Penggunaan",
+    closeHelpBtn: "Faham!",
+    linkPlan: "Pelan Tempat Duduk",
+    linkMissing: "Tiada?",
+    guestPlan: "Pelan Tetamu",
+    fallbackStatus: "Sila cari nama anda terlebih dahulu untuk melihat meja anda.",
+    tablePrefix: "Anda ditempatkan di Meja ",
+    closeBtn: "Tutup",
+    downloadPassBtn: "Muat Turun Pas",
+    helpTitle: "Cara Penggunaan",
+    helpSteps: ["Taip nama anda", "Pilih nama daripada cadangan", "Klik butang \"Cari Meja\"", "Klik \"Pelan Tempat Duduk\" untuk melihat susun atur"],
+    helpNote: "*Nama tidak membezakan huruf besar dan kecil",
+    contactTitle: "Hubungi",
+    alertNoRecord: "Rekod tidak ditemui. Sila pilih nama anda terus daripada senarai cadangan di bawah kotak carian atau hubungi kami.",
+    alertSetUrl: "Sila sediakan pautan URL imej pelan lantai yang sah terlebih dahulu."
+  },
+  SWK: {
+    mainHeading: "Carik Meja Kitak",
+    placeholder: "Taip nama kitak...",
+    findBtn: "Carik Meja",
+    linkHelp: "Camne Guna",
+    closeHelpBtn: "Faham dah!",
+    linkPlan: "Pelan Tempat Dudok",
+    linkMissing: "Sikda?",
+    guestPlan: "Pelan Pengunjung",
+    fallbackStatus: "Sila carik nama kitak dolok untuk nangga meja.",
+    tablePrefix: "Kitak dudok rah Meja ",
+    closeBtn: "Tutup",
+    downloadPassBtn: "Muat Turun Pas",
+    helpTitle: "Camne guna?",
+    helpSteps: ["Taip nama kitak", "Pilih nama nok ada dalam list", "Ketek butang \"Carik Meja\"", "Klik \"Pelan Tempat Dudok\" untuk nangga susun atur"],
+    helpNote: "*Carian nama sik kesah huruf besar kah kecik",
+    contactTitle: "Kontak",
+    alertNoRecord: "Nama sik jumpa. Sila pilih nama kitak terus dari senarai cadangan di bawah atau kontak kamek",
+    alertSetUrl: "Sila sediakan pautan URL imej pelan lantai yang sah dolok."
+  }
+};
+
+let currentDisplayName = textLibrary.EN.guestPlan;
+let currentDisplayTableMessage = textLibrary.EN.fallbackStatus;
+
+const searchInput = document.getElementById('search-input');
+const suggestionsBox = document.getElementById('suggestions-box');
+const seatingDisplay = document.getElementById('seating-display');
+const userAssignmentText = document.getElementById('user-assignment');
+
+const planModal = document.getElementById('plan-modal');
+const helpModal = document.getElementById('help-modal');
+const contactModal = document.getElementById('contact-modal');
+
+const popupNameElement = document.getElementById('popup-user-name');
+const popupTableElement = document.getElementById('popup-user-table');
+const floorPlanImg = document.getElementById('floor-plan-img');
+
+const toggleContainer = document.getElementById('lang-toggle');
+const pill = document.getElementById('glass-pill');
+
+let isDragging = false;
+let startX = 0;
+let currentTranslateX = 3; 
+let minX = 3;
+let maxX = 93; 
+
+const languageSlots = { 'EN': 3, 'BM': 48, 'SWK': 93 };
+
+// --- RUN ENGINE ON LOAD ---
+window.onload = function() {
+  // Pull data through external REST API instead of google.script.run
+  fetch(WEB_APP_URL)
+    .then(response => response.json())
+    .then(data => {
+      if(data && data.rows) {
+        allData = data;
+        uniqueNames = [...new Set(data.rows.map(row => row[0].toString().trim()))].sort();
+      }
+    })
+    .catch(err => console.error("Error loading Sheet rows securely:", err));
+
+  applyLanguageUI();
+  setupDraggablePill();
+  initPlayer(); 
+};
+
+function setupDraggablePill() {
+  if(!pill || !toggleContainer) return;
+  pill.addEventListener('pointerdown', dragStart);
+  window.addEventListener('pointermove', dragMove);
+  window.addEventListener('pointerup', dragEnd);
+  
+  toggleContainer.addEventListener('click', function(e) {
+    if(e.target === pill) return;
+    const rect = toggleContainer.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    let targetLang = 'EN';
+    if (clickX > 46 && clickX <= 92) targetLang = 'BM';
+    if (clickX > 92) targetLang = 'SWK';
+    snapToLanguage(targetLang);
+  });
+}
+
+function dragStart(e) {
+  isDragging = true;
+  e.preventDefault(); 
+  startX = e.pageX - currentTranslateX;
+  pill.classList.remove('snap-transition');
+  pill.setPointerCapture(e.pointerId);
+}
+
+function dragMove(e) {
+  if (!isDragging) return;
+  let computedX = e.pageX - startX;
+  if (computedX < minX) computedX = minX;
+  if (computedX > maxX) computedX = maxX;
+  currentTranslateX = computedX;
+  pill.style.transform = `translateX(${currentTranslateX - minX}px)`;
+}
+
+function dragEnd(e) {
+  if (!isDragging) return;
+  isDragging = false;
+  pill.classList.add('snap-transition');
+  let closestLang = 'EN';
+  let shortestDistance = Infinity;
+  for (const [lang, slotPos] of Object.entries(languageSlots)) {
+    let distance = Math.abs(currentTranslateX - slotPos);
+    if (distance < shortestDistance) {
+      shortestDistance = distance;
+      closestLang = lang;
+    }
+  }
+  snapToLanguage(closestLang);
+}
+
+function snapToLanguage(targetLang) {
+  currentTranslateX = languageSlots[targetLang];
+  pill.style.transform = `translateX(${currentTranslateX - minX}px)`;
+  setLanguage(targetLang);
+}
+
+function setLanguage(selectedLang) {
+  if (currentLang === selectedLang) return;
+  currentLang = selectedLang;
+  toggleContainer.setAttribute('data-active-lang', selectedLang);
+  
+  if (currentDisplayName === textLibrary.EN.guestPlan || currentDisplayName === textLibrary.BM.guestPlan || currentDisplayName === textLibrary.SWK.guestPlan) {
+    currentDisplayName = textLibrary[currentLang].guestPlan;
+  }
+  if (currentDisplayTableMessage === textLibrary.EN.fallbackStatus || currentDisplayTableMessage === textLibrary.BM.fallbackStatus || currentDisplayTableMessage === textLibrary.SWK.fallbackStatus) {
+    currentDisplayTableMessage = textLibrary[currentLang].fallbackStatus;
+  } else {
+    const currentTableNumber = userAssignmentText.textContent.replace(textLibrary.EN.tablePrefix, "").replace(textLibrary.BM.tablePrefix, "").replace(textLibrary.SWK.tablePrefix, "");
+    currentDisplayTableMessage = textLibrary[currentLang].tablePrefix + currentTableNumber;
+  }
+  applyLanguageUI();
+  if (seatingDisplay.style.display === 'block') {
+    userAssignmentText.textContent = currentDisplayTableMessage;
+  }
+}
+
+function applyLanguageUI() {
+  const langPack = textLibrary[currentLang];
+  document.getElementById('main-heading').textContent = langPack.mainHeading;
+  searchInput.placeholder = langPack.placeholder;
+  document.getElementById('find-btn').textContent = langPack.findBtn;
+  document.getElementById('link-help').textContent = langPack.linkHelp;
+  document.getElementById('link-plan').textContent = langPack.linkPlan;
+  document.getElementById('link-missing').textContent = langPack.linkMissing;
+  document.getElementById('close-plan-btn').textContent = langPack.closeBtn;
+  document.getElementById('download-pass-btn').textContent = langPack.downloadPassBtn;
+  document.getElementById('help-title').textContent = langPack.helpTitle;
+  document.getElementById('help-note').textContent = langPack.helpNote;
+  document.getElementById('close-help-btn').textContent = langPack.closeHelpBtn;
+  document.getElementById('contact-title').textContent = langPack.contactTitle;
+  document.getElementById('close-contact-btn').textContent = langPack.closeBtn;
+
+  const helpStepsList = document.getElementById('help-steps');
+  helpStepsList.innerHTML = '';
+  langPack.helpSteps.forEach(stepText => {
+    const li = document.createElement('li');
+    li.textContent = stepText;
+    helpStepsList.appendChild(li);
+  });
+}
+
+searchInput.addEventListener('input', function() {
+  const query = this.value.toLowerCase().trim();
+  suggestionsBox.innerHTML = '';
+  if (!query) {
+    suggestionsBox.style.display = 'none';
+    return;
+  }
+  const filteredNames = uniqueNames.filter(name => name.toLowerCase().includes(query));
+  if (filteredNames.length > 0) {
+    filteredNames.forEach(name => {
+      const div = document.createElement('div');
+      div.textContent = name;
+      div.onclick = function() {
+        searchInput.value = name;
+        suggestionsBox.style.display = 'none';
+      };
+      suggestionsBox.appendChild(div);
+    });
+    suggestionsBox.style.display = 'block';
+  } else {
+    suggestionsBox.style.display = 'none';
+  }
+});
+
+document.addEventListener('click', function(e) {
+  if (!searchInput.contains(e.target)) suggestionsBox.style.display = 'none';
+});
+
+function openPlanModal() {
+  popupNameElement.textContent = currentDisplayName;
+  popupTableElement.textContent = currentDisplayTableMessage;
+  planModal.style.display = 'flex';
+}
+function openHelpModal() { helpModal.style.display = 'flex'; }
+function openContactModal() { contactModal.style.display = 'flex'; }
+
+document.onkeydown = function(evt) {
+  evt = evt || window.event;
+  if (evt.keyCode == 27) {
+    planModal.style.display = 'none';
+    helpModal.style.display = 'none';
+    contactModal.style.display = 'none';
+  }
+};
+
+function closeOutsideModal(event, id) {
+  const targetModal = document.getElementById(id);
+  if (event.target === targetModal) targetModal.style.display = 'none';
+}
+
+function displayUserData() {
+  const selectedName = searchInput.value.trim().toLowerCase();
+  const langPack = textLibrary[currentLang];
+  seatingDisplay.style.display = 'none';
+  userAssignmentText.textContent = '';
+  currentDisplayName = langPack.guestPlan;
+  currentDisplayTableMessage = langPack.fallbackStatus;
+
+  if (!selectedName || !allData.rows) return;
+  const tableColumnIndex = allData.headers.findIndex(header => header.toString().trim().toLowerCase() === 'table');
+  if (tableColumnIndex === -1) {
+    alert("Error: Could not find a column named 'Table'.");
+    return;
+  }
+  const matchedRow = allData.rows.find(row => row[0].toString().trim().toLowerCase() === selectedName);
+  if (matchedRow) {
+    const exactName = matchedRow[0];
+    const tableName = matchedRow[tableColumnIndex];
+    currentDisplayName = exactName;
+    currentDisplayTableMessage = langPack.tablePrefix + tableName;
+    userAssignmentText.textContent = currentDisplayTableMessage;
+    seatingDisplay.style.display = 'block';
+  } else {
+    alert(langPack.alertNoRecord);
+  }
+}
+
+function downloadSeatingPassImage() {
+  const imgSource = document.getElementById('floor-plan-img');
+  const langPack = textLibrary[currentLang];
+  if (!imgSource.src || imgSource.src.includes("YOUR_IMAGE_URL_HERE") || imgSource.src.endsWith('/0')) {
+    alert(langPack.alertSetUrl);
+    return;
+  }
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  const imgWidth = imgSource.naturalWidth || 800;
+  const imgHeight = imgSource.naturalHeight || 600;
+  canvas.width = imgWidth;
+  canvas.height = imgHeight + 160;
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#000000';
+  ctx.textAlign = 'center';
+  ctx.font = 'bold ' + Math.max(24, Math.floor(canvas.width * 0.035)) + 'px sans-serif';
+  ctx.fillText(currentDisplayName, canvas.width / 2, 60);
+
+  ctx.fillStyle = '#6c757d';
+  ctx.font = '500 ' + Math.max(18, Math.floor(canvas.width * 0.026)) + 'px sans-serif';
+  ctx.fillText(currentDisplayTableMessage, canvas.width / 2, 110);
+  ctx.drawImage(imgSource, 0, 160, imgWidth, imgHeight);
+
+  try {
+    const dataUrl = canvas.toDataURL('image/png');
+    const downloadLink = document.createElement('a');
+    const safeName = currentDisplayName.replace(/[^a-z0-9]/gi, '_');
+    downloadLink.download = 'Seating_Pass_' + safeName + '.png';
+    downloadLink.href = dataUrl;
+    document.body.appendChild(downloadLink);
+    downloadLink.click();
+    document.body.removeChild(downloadLink);
+  } catch (error) {
+    alert("Cross-Origin restriction profile blocking direct download compilation. Please press and hold the image on screen to save it manually.");
+  }
+}
+
+// --- AUDIO PLAYER ENGINE ---
+const playlist = [
+  { title: "Akad", url: "https://dl.dropboxusercontent.com/scl/fi/fwfb7lvbjjne35nttz55y/Akad.mp3?rlkey=vdo9pbxphz5u5vukjtzdatnys&st=4k5o5r1n" },
+  { title: "Bahagia", url: "https://dl.dropboxusercontent.com/scl/fi/y5hqvuehm87btwgk1q4f2/Bahagia.mp3?rlkey=kjaqlhg9zhs48j2nv6jjd9eqn&st=9uwehhpl" },
+  { title: "Cinta Gila", url: "https://dl.dropboxusercontent.com/scl/fi/ygrzyueka6pv25gs97c4a/Grey-Sky-Morning-Cinta-Gila-Official-Music-Video.mp3?rlkey=h6hq4rq3rbc84ctqfugo4hgj5&st=m5ug6pxi" }
+];
+
+let currentTrackIndex = 0;
+const audio = document.getElementById('bg-audio');
+
+function initPlayer() {
+  if (!audio) return;
+  audio.src = playlist[currentTrackIndex].url;
+  document.getElementById('track-title').textContent = playlist[currentTrackIndex].title;
+  audio.load();
+  updateUiToPlayState(false);
+}
+
+function togglePlay() {
+  if (audio.paused) {
+    audio.play()
+      .then(() => updateUiToPlayState(true))
+      .catch(err => console.error("Playback failed: ", err));
+  } else {
+    audio.pause();
+    updateUiToPlayState(false);
+  }
+}
+
+function nextTrack() {
+  currentTrackIndex = (currentTrackIndex + 1) % playlist.length;
+  changeTrack();
+}
+
+function prevTrack() {
+  currentTrackIndex = (currentTrackIndex - 1 + playlist.length) % playlist.length;
+  changeTrack();
+}
+
+function changeTrack() {
+  audio.src = playlist[currentTrackIndex].url;
+  document.getElementById('track-title').textContent = playlist[currentTrackIndex].title;
+  
+  audio.play()
+    .then(() => updateUiToPlayState(true))
+    .catch(() => updateUiToPlayState(false));
+}
+
+function updateUiToPlayState(isPlaying) {
+  const playIcon = document.getElementById('play-icon');
+  const pauseIcon = document.getElementById('pause-icon');
+  if (!playIcon || !pauseIcon) return;
+  
+  if (isPlaying) {
+    playIcon.style.display = 'none';
+    pauseIcon.style.display = 'inline';
+  } else {
+    playIcon.style.display = 'inline';
+    pauseIcon.style.display = 'none';
+  }
+}
+
+if (audio) {
+  audio.addEventListener('ended', nextTrack);
+}
+
+// --- STRICT EMAIL-ONLY AUTOPLAY ENGINE ---
+function triggerEmailAutoplay() {
+  if (audio && audio.paused) {
+    audio.play()
+      .then(() => updateUiToPlayState(true))
+      .catch(err => console.log("Autoplay blocked by browser policy:", err));
+  }
+}
+
+// Only autoplay when hitting the URL parameter via email redirect (?play=1)
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get('play') === '1') {
+  setTimeout(triggerEmailAutoplay, 400); 
+}
